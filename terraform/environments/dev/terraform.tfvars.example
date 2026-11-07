@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (git-ignored) for local plans. CI supplies these via TF_VAR_* from GitHub variables.
+region          = "us-east-1"
+container_image = "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/icp/app@sha256:<DIGEST>"
+
+# alarm_email_addresses = ["oncall@example.com"]
+# certificate_arn       = "arn:aws:acm:us-east-1:<ACCOUNT_ID>:certificate/<ID>"
+# allowed_ingress_cidrs = ["203.0.113.0/24"]

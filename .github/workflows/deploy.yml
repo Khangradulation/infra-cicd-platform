@@ -1,0 +1,186 @@
+# Multi-stage promotion of ONE immutable image digest:
+#   dev (deploy + smoke) -> staging (deploy + integration tests)
+#   -> production (GitHub Environment approval, main or v* tag only).
+# Any failed health check / smoke / integration test stops promotion.
+# Failed rollouts are rolled back automatically by the ECS circuit breaker.
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_digest:
+        description: sha256 digest of an image already in ECR
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: "sha256:<digest> of an image already in ECR (promote it or re-deploy an older one)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate digest input
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::image_digest must be sha256:<64 hex>"; exit 1; }
+          if [[ "$GITHUB_REF" != "refs/heads/main" && "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "::error::Deployments run only from main or a v* release tag (got $GITHUB_REF)."
+            exit 1
+          fi
+          echo "Promoting $DIGEST from ref $GITHUB_REF"
+
+  dev:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: dev
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-deploy-dev-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Deploy digest to ECS
+        id: deploy
+        run: scripts/deploy-ecs.sh dev "${{ inputs.image_digest }}"
+      - name: Smoke test through the ALB
+        run: scripts/smoke-test-url.sh "${{ steps.deploy.outputs.url }}" "${{ steps.deploy.outputs.git_sha }}" dev
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### dev: ${{ job.status }}"
+            echo "| | |"; echo "|---|---|"
+            echo "| Digest | \`${{ inputs.image_digest }}\` |"
+            echo "| Commit | \`${{ steps.deploy.outputs.git_sha }}\` |"
+            echo "| Task definition | \`${{ steps.deploy.outputs.task_definition_arn }}\` |"
+            echo "| Previous | \`${{ steps.deploy.outputs.previous_task_definition_arn }}\` |"
+            echo "| URL | ${{ steps.deploy.outputs.url }} |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  staging:
+    needs: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-deploy-staging-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Deploy the same digest to ECS
+        id: deploy
+        run: scripts/deploy-ecs.sh staging "${{ inputs.image_digest }}"
+      - name: Smoke test
+        run: scripts/smoke-test-url.sh "${{ steps.deploy.outputs.url }}" "${{ steps.deploy.outputs.git_sha }}" staging
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Integration tests against staging
+        working-directory: application
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.url }}
+          EXPECTED_GIT_SHA: ${{ steps.deploy.outputs.git_sha }}
+          EXPECTED_ENV: staging
+        run: |
+          pip install --disable-pip-version-check --require-hashes -r requirements-dev.txt
+          pytest tests/integration -m integration --no-cov -o addopts="" -v --junitxml=reports/integration.xml
+      - name: Upload integration report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-report
+          path: application/reports/integration.xml
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### staging: ${{ job.status }}"
+            echo "| | |"; echo "|---|---|"
+            echo "| Digest | \`${{ inputs.image_digest }}\` |"
+            echo "| Task definition | \`${{ steps.deploy.outputs.task_definition_arn }}\` |"
+            echo "| URL | ${{ steps.deploy.outputs.url }} |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  production:
+    needs: staging
+    # Only the protected release branch or an approved release tag may reach prod.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production # required reviewers approve here (configure in repo settings)
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-deploy-prod-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Deploy the same digest to ECS
+        id: deploy
+        run: scripts/deploy-ecs.sh prod "${{ inputs.image_digest }}"
+      - name: Smoke test
+        run: scripts/smoke-test-url.sh "${{ steps.deploy.outputs.url }}" "${{ steps.deploy.outputs.git_sha }}" prod
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### production: ${{ job.status }}"
+            echo "| | |"; echo "|---|---|"
+            echo "| Digest | \`${{ inputs.image_digest }}\` |"
+            echo "| Commit | \`${{ steps.deploy.outputs.git_sha }}\` |"
+            echo "| Task definition | \`${{ steps.deploy.outputs.task_definition_arn }}\` |"
+            echo "| Previous (rollback target) | \`${{ steps.deploy.outputs.previous_task_definition_arn }}\` |"
+            echo "| URL | ${{ steps.deploy.outputs.url }} |"
+            echo "| Approved by | ${{ github.triggering_actor }} (see run's deployment review) |"
+          } >>"$GITHUB_STEP_SUMMARY"

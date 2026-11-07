@@ -1,0 +1,53 @@
+name: terraform-init
+description: Install pinned Terraform, assume an AWS role via OIDC, and init a root against the S3 backend.
+
+inputs:
+  root:
+    description: Root directory, e.g. terraform/environments/dev
+    required: true
+  role-arn:
+    description: IAM role to assume through GitHub OIDC
+    required: true
+  aws-region:
+    description: AWS region
+    required: true
+  state-bucket:
+    description: Terraform state bucket
+    required: true
+  state-kms-key-arn:
+    description: KMS key for state encryption
+    required: true
+  terraform-version:
+    description: Exact Terraform version
+    default: "1.17.1"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Terraform ${{ inputs.terraform-version }}
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Assume AWS role (OIDC, short-lived)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+        aws-region: ${{ inputs.aws-region }}
+        role-duration-seconds: 3600
+        mask-aws-account-id: true
+
+    - name: terraform init
+      shell: bash
+      working-directory: ${{ inputs.root }}
+      env:
+        BUCKET: ${{ inputs.state-bucket }}
+        REGION: ${{ inputs.aws-region }}
+        KMS: ${{ inputs.state-kms-key-arn }}
+      run: |
+        terraform init -input=false -lockfile=readonly \
+          -backend-config="bucket=${BUCKET}" \
+          -backend-config="region=${REGION}" \
+          -backend-config="kms_key_id=${KMS}"

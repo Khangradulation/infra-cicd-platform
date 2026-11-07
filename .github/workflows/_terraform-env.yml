@@ -1,0 +1,149 @@
+# Reusable: plan one environment with the read-only role, then (if there are
+# changes) apply in the protected infra-<env> GitHub Environment.
+#
+# The binary plan never leaves a runner (it embeds state data). Instead the
+# plan job publishes a value-free summary plus a change-set fingerprint, and
+# the apply job re-plans and REFUSES to apply unless its fingerprint matches
+# what reviewers approved.
+name: _terraform-env
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: dev | staging | prod
+        type: string
+        required: true
+      github-environment:
+        description: GitHub Environment gating the apply (infra-dev, infra-staging, infra-production)
+        type: string
+        required: true
+    outputs:
+      applied:
+        description: "true if an apply ran"
+        value: ${{ jobs.apply.outputs.applied }}
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VAR_region: ${{ vars.AWS_REGION }}
+  TF_VAR_container_image: ${{ vars.BOOTSTRAP_IMAGE_URI }}
+  TF_VAR_repository_tag: ${{ github.repository }}
+
+jobs:
+  plan:
+    name: plan (${{ inputs.env }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      has_changes: ${{ steps.summary.outputs.has_changes }}
+      fingerprint: ${{ steps.summary.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/${{ inputs.env }}
+          role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+
+      - name: terraform plan
+        id: plan
+        working-directory: terraform/environments/${{ inputs.env }}
+        run: |
+          set +e
+          terraform plan -no-color -lock-timeout=10m -detailed-exitcode -out=tfplan >plan.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::terraform plan failed for ${{ inputs.env }}"
+            # Errors only (no resource attribute dump) to keep values out of logs.
+            grep -E '^(Error|│)' plan.log | head -80 || true
+            exit 1
+          fi
+          echo "exitcode=$rc" >>"$GITHUB_OUTPUT"
+
+      - name: Summarise plan (no attribute values)
+        id: summary
+        working-directory: terraform/environments/${{ inputs.env }}
+        run: |
+          terraform show -json tfplan \
+            | python3 "$GITHUB_WORKSPACE/scripts/tf-plan-summary.py" --env "${{ inputs.env }}" \
+                --markdown summary.md --fingerprint-file fingerprint.txt >>"$GITHUB_OUTPUT"
+          cat summary.md >>"$GITHUB_STEP_SUMMARY"
+          rm -f tfplan plan.log   # never persist the binary plan
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan-summary-${{ inputs.env }}
+          path: terraform/environments/${{ inputs.env }}/summary.md
+          retention-days: 7
+
+  apply:
+    name: apply (${{ inputs.env }})
+    needs: plan
+    if: needs.plan.outputs.has_changes == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: ${{ inputs.github-environment }}   # prod: required reviewers approve here
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      applied: ${{ steps.apply.outputs.applied }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/${{ inputs.env }}
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+
+      - name: Re-plan and verify it matches the reviewed plan
+        working-directory: terraform/environments/${{ inputs.env }}
+        env:
+          APPROVED: ${{ needs.plan.outputs.fingerprint }}
+        run: |
+          terraform plan -no-color -lock-timeout=10m -out=tfplan >plan.log 2>&1 \
+            || { grep -E '^(Error|│)' plan.log | head -80; exit 1; }
+          terraform show -json tfplan \
+            | python3 "$GITHUB_WORKSPACE/scripts/tf-plan-summary.py" --env "${{ inputs.env }}" \
+                --markdown summary.md --fingerprint-file fingerprint.txt >/dev/null
+          if [ "$(cat fingerprint.txt)" != "$APPROVED" ]; then
+            echo "::error::The change set differs from the reviewed plan (infrastructure or state changed since). Re-run the workflow to review a fresh plan."
+            cat summary.md
+            exit 1
+          fi
+          echo "Change set matches the reviewed plan ($APPROVED)."
+
+      - name: terraform apply
+        id: apply
+        working-directory: terraform/environments/${{ inputs.env }}
+        run: |
+          terraform apply -no-color -lock-timeout=10m tfplan
+          rm -f tfplan
+          echo "applied=true" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Applied \`${{ inputs.env }}\`"
+            echo ""
+            echo "| Output | Value |"
+            echo "|---|---|"
+            for k in app_url cluster_name service_name dashboard_name nat_gateway_count; do
+              echo "| \`$k\` | \`$(terraform output -raw "$k" 2>/dev/null || echo n/a)\` |"
+            done
+          } >>"$GITHUB_STEP_SUMMARY"

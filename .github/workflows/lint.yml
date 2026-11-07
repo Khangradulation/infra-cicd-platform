@@ -1,0 +1,40 @@
+# Repository hygiene: workflow syntax/security (actionlint), shell scripts
+# (shellcheck), Dockerfile (hadolint), plan-summary script tests.
+name: lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned tools (sha256-verified)
+        run: scripts/install-ci-tools.sh actionlint hadolint
+      - name: actionlint (includes shellcheck of run blocks)
+        run: actionlint -color
+      - name: shellcheck scripts
+        run: shellcheck scripts/*.sh
+      - name: hadolint
+        run: hadolint application/Dockerfile
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: No third-party action without a full commit SHA
+        run: |
+          bad=$(grep -RhoE 'uses:\s*[^ ./][^ ]*@[^ ]+' .github | grep -vE '@[0-9a-f]{40}$' || true)
+          if [ -n "$bad" ]; then echo "::error::Unpinned actions:"; echo "$bad"; exit 1; fi
+          echo "All actions pinned to commit SHAs."

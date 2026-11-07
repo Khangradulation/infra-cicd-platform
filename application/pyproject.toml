@@ -1,0 +1,28 @@
+[project]
+name = "icp-api"
+version = "0.1.0"
+description = "Sample Flask API deployed by infra-cicd-platform"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests/unit"]
+addopts = "-ra --strict-markers --cov=app --cov-report=term-missing --cov-fail-under=90"
+markers = ["integration: tests that call a deployed environment (need BASE_URL)"]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "PL"]
+ignore = ["PLR2004"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S310", "PLR0913"]
+"gunicorn.conf.py" = ["S104"]

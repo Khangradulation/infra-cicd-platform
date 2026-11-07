@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+region = "us-east-1"
+
+# name_prefix       = "icp"
+# state_bucket_name = "my-org-icp-tfstate"   # default: icp-tfstate-<account>-<region>
+
+# Optional hardening: only these principals may delete/reconfigure the bucket.
+# state_admin_principal_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/aws-reserved/sso.amazonaws.com/*AdministratorAccess*"]

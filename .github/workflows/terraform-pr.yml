@@ -1,0 +1,182 @@
+# Pull-request validation for Terraform. This workflow CANNOT apply:
+#   * it only ever assumes the read-only plan role (no apply role is reachable:
+#     apply roles trust only infra-<env> GitHub Environments, which no job here uses)
+#   * it runs on `pull_request` (not pull_request_target), so fork PRs get no OIDC token
+name: terraform-pr
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".tflint.hcl"
+      - ".checkov.yaml"
+      - ".github/workflows/terraform-pr.yml"
+      - ".github/workflows/_terraform-env.yml"
+      - ".github/actions/terraform-init/**"
+      - "scripts/install-ci-tools.sh"
+      - "scripts/tf-plan-summary.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VERSION: "1.17.1"
+
+jobs:
+  static:
+    name: fmt / validate / test / tflint / checkov
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install pinned tools (sha256-verified)
+        run: scripts/install-ci-tools.sh tflint
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install Checkov
+        run: pip install --disable-pip-version-check checkov==3.4.3
+
+      - name: terraform fmt -check
+        run: make fmt-check
+
+      - name: terraform init -backend=false + validate (all roots, modules, examples)
+        run: make validate
+
+      - name: terraform test (mocked provider, no credentials)
+        run: make tf-test
+
+      - name: TFLint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # avoids API rate limits when fetching the ruleset
+        run: make tflint
+
+      - name: Checkov
+        run: checkov --config-file .checkov.yaml -o cli -o junitxml --output-file-path console,reports/checkov.xml
+
+      - name: Upload Checkov report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checkov-report
+          path: reports/checkov.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+  plan:
+    name: plan (${{ matrix.env }})
+    needs: static
+    # Fork PRs receive no OIDC token; skip plans until AWS is configured.
+    if: github.event.pull_request.head.repo.full_name == github.repository && vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_container_image: ${{ vars.BOOTSTRAP_IMAGE_URI }}
+      TF_VAR_repository_tag: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/${{ matrix.env }}
+          role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+          terraform-version: ${{ env.TF_VERSION }}
+
+      - name: terraform plan
+        working-directory: terraform/environments/${{ matrix.env }}
+        run: |
+          set +e
+          terraform plan -no-color -lock-timeout=5m -detailed-exitcode -out=tfplan >plan.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::terraform plan failed for ${{ matrix.env }}"
+            grep -E '^(Error|│)' plan.log | head -80 || true
+            { echo "### Terraform plan: \`${{ matrix.env }}\`"; echo; echo ":x: **plan failed** (see job log)"; } >summary.md
+            exit 1
+          fi
+
+      - name: Summarise plan (no attribute values)
+        working-directory: terraform/environments/${{ matrix.env }}
+        run: |
+          terraform show -json tfplan \
+            | python3 "$GITHUB_WORKSPACE/scripts/tf-plan-summary.py" --env "${{ matrix.env }}" \
+                --markdown summary.md --fingerprint-file fingerprint.txt
+          cat summary.md >>"$GITHUB_STEP_SUMMARY"
+          rm -f tfplan plan.log
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: tfplan-summary-${{ matrix.env }}
+          path: terraform/environments/${{ matrix.env }}/summary.md
+          retention-days: 7
+          if-no-files-found: ignore
+
+  comment:
+    name: PR comment
+    needs: plan
+    if: always() && needs.plan.result != 'skipped'
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tfplan-summary-*
+          path: summaries
+          merge-multiple: false
+
+      - name: Upsert plan summary comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const marker = '<!-- terraform-plan-summary -->';
+            let body = `${marker}\n## Terraform plan\n\n`;
+            for (const env of ['dev', 'staging', 'prod']) {
+              const f = path.join('summaries', `tfplan-summary-${env}`, 'summary.md');
+              body += fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : `### \`${env}\`\n\n_no summary produced_\n`;
+              body += '\n';
+            }
+            body += `\n<sub>Commit ${context.payload.pull_request.head.sha.slice(0, 7)} · [run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}). PR workflows cannot apply.</sub>`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }

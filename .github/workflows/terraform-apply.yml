@@ -1,0 +1,84 @@
+# Trusted-branch infrastructure deployment: dev -> staging -> prod.
+# Each stage plans with the read-only role and applies (only if there are
+# changes) inside its infra-<env> GitHub Environment. Production waits for
+# the infra-production reviewers. One apply per state at a time.
+name: terraform-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/modules/**"
+      - "terraform/environments/dev/**"
+      - "terraform/environments/staging/**"
+      - "terraform/environments/prod/**"
+      - ".github/workflows/_terraform-env.yml"
+      - ".github/workflows/terraform-apply.yml"
+      - ".github/actions/terraform-init/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Only main may apply
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::terraform-apply only runs from main (got ${GITHUB_REF})."
+          exit 1
+      - name: Check configuration
+        env:
+          PLAN_ROLE: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          IMAGE: ${{ vars.BOOTSTRAP_IMAGE_URI }}
+        run: |
+          missing=""
+          [ -n "$PLAN_ROLE" ] || missing="$missing AWS_PLAN_ROLE_ARN"
+          [ -n "$BUCKET" ]    || missing="$missing TF_STATE_BUCKET"
+          [ -n "$IMAGE" ]     || missing="$missing BOOTSTRAP_IMAGE_URI"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing (see docs/setup.md)"
+            exit 1
+          fi
+
+  dev:
+    needs: guard
+    concurrency:
+      group: terraform-state-dev
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_terraform-env.yml
+    with:
+      env: dev
+      github-environment: infra-dev
+
+  staging:
+    needs: dev
+    concurrency:
+      group: terraform-state-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_terraform-env.yml
+    with:
+      env: staging
+      github-environment: infra-staging
+
+  prod:
+    needs: staging
+    concurrency:
+      group: terraform-state-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_terraform-env.yml
+    with:
+      env: prod
+      github-environment: infra-production

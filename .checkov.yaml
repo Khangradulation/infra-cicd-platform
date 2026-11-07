@@ -1,0 +1,13 @@
+# Checkov configuration. Approved exceptions live INLINE next to the resource
+# as `#checkov:skip=<ID>:<reason>` and are catalogued in docs/security.md.
+directory:
+  - terraform
+framework:
+  - terraform
+skip-path:
+  - terraform/modules/.*/examples
+  - \.terraform
+compact: true
+quiet: true
+soft-fail: false
+download-external-modules: false

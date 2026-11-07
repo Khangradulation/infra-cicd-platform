@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars (git-ignored).
+region            = "us-east-1"
+github_owner      = "<GITHUB_OWNER>"
+github_repository = "infra-cicd-platform"
+
+# From `terraform -chdir=terraform/bootstrap output`
+state_bucket_name = "<STATE_BUCKET>"
+state_kms_key_arn = "arn:aws:kms:us-east-1:<ACCOUNT_ID>:key/<KEY_ID>"
+
+# REQUIRED if your repo uses GitHub's immutable OIDC subjects (newer repos do). Read it, don't guess:
+#   gh api repos/<GITHUB_OWNER>/infra-cicd-platform/actions/oidc/customization/sub --jq .sub_claim_prefix
+# oidc_sub_claim_prefix = "repo:<GITHUB_OWNER>@<OWNER_ID>/infra-cicd-platform@<REPO_ID>"
+
+# oidc_subject_includes_ref = true   # after customising the repo OIDC sub template
