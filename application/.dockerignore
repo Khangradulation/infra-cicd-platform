@@ -1,0 +1,7 @@
+# Allow-list: only what the image needs reaches the build context.
+*
+!requirements.txt
+!gunicorn.conf.py
+!src/
+src/**/__pycache__
+src/**/*.pyc

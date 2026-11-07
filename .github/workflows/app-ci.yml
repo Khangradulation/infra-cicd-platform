@@ -1,0 +1,206 @@
+# Application CI: lint + unit tests -> build ONCE -> hadolint, Trivy, container
+# smoke test -> (main only) push :<git-sha> to ECR -> promote that digest via deploy.yml.
+name: app-ci
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "application/**"
+      - ".trivyignore"
+      - ".github/workflows/app-ci.yml"
+      - ".github/workflows/deploy.yml"
+      - "scripts/container-smoke-test.sh"
+      - "scripts/deploy-ecs.sh"
+      - "scripts/smoke-test-url.sh"
+  push:
+    branches: [main]
+    paths:
+      - "application/**"
+      - ".trivyignore"
+      - ".github/workflows/app-ci.yml"
+      - ".github/workflows/deploy.yml"
+      - "scripts/deploy-ecs.sh"
+      - "scripts/smoke-test-url.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_LOCAL: icp-app:ci
+
+jobs:
+  test:
+    name: lint + unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: application/requirements-dev.txt
+
+      - name: Install hash-locked dev dependencies
+        run: pip install --disable-pip-version-check --require-hashes -r requirements-dev.txt
+
+      - name: Ruff (lint + format check)
+        run: |
+          ruff check --output-format=github .
+          ruff format --check .
+
+      - name: Unit tests (coverage gate 90%)
+        run: pytest --junitxml=reports/junit.xml --cov-report=xml:reports/coverage.xml
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-test-reports
+          path: application/reports/
+          retention-days: 14
+
+  image:
+    name: build, scan, smoke test${{ github.event_name != 'pull_request' && ', push' || '' }}
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write # used only on main, for the ECR push role
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools (sha256-verified)
+        run: scripts/install-ci-tools.sh hadolint trivy
+
+      - name: hadolint
+        run: hadolint application/Dockerfile
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (once)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: application
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE_LOCAL }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}-${{ github.run_number }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.event.pull_request.updated_at || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container smoke test (read-only FS, caps dropped, non-root)
+        run: scripts/container-smoke-test.sh "$IMAGE_LOCAL" "$GITHUB_SHA"
+
+      - name: Trivy - gate (fail on fixable HIGH/CRITICAL)
+        run: |
+          trivy image --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile .trivyignore --exit-code 1 --format table "$IMAGE_LOCAL"
+
+      - name: Trivy - full report (all severities, informational)
+        if: always()
+        run: |
+          mkdir -p reports
+          trivy image --quiet --scanners vuln,secret --ignorefile .trivyignore --format json \
+            --output reports/trivy.json "$IMAGE_LOCAL" || true
+          python3 - <<'PY' >>"$GITHUB_STEP_SUMMARY"
+          import json, collections
+          d = json.load(open("reports/trivy.json"))
+          total, fixable = collections.Counter(), collections.Counter()
+          for r in d.get("Results", []):
+              for v in r.get("Vulnerabilities") or []:
+                  total[v["Severity"]] += 1
+                  if v.get("FixedVersion"):
+                      fixable[v["Severity"]] += 1
+          print("### Trivy image scan\n\n| Severity | Total | Fix available |\n|---|---|---|")
+          for s in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]:
+              print(f"| {s} | {total[s]} | {fixable[s]} |")
+          print("\nGate: build fails on any **fixable** HIGH/CRITICAL not listed in `.trivyignore`.")
+          PY
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trivy-report
+          path: reports/trivy.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # ------------------------------------------------ main only: publish
+      - name: Assume ECR push role (OIDC)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          role-session-name: gha-ecr-push-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to ECR
+        id: ecr
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        with:
+          mask-password: true
+
+      - name: Push the scanned image as :<git-sha> and resolve its digest
+        id: push
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          remote="${REGISTRY}/${REPO}:${GITHUB_SHA}"
+          if aws ecr describe-images --repository-name "$REPO" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "::notice::Tag ${GITHUB_SHA} already exists (immutable); reusing the image pushed by the original run."
+          else
+            docker tag "$IMAGE_LOCAL" "$remote"
+            docker push "$remote"
+          fi
+          digest="$(aws ecr describe-images --repository-name "$REPO" --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::could not resolve pushed digest"; exit 1; }
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Published image"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`${GITHUB_SHA}\` |"
+            echo "| Digest | \`${digest}\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: promote
+    needs: image
+    # Cost-safe default: promotion only runs when environments are kept up (AUTO_DEPLOY=true).
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.image.outputs.digest != '' && vars.AUTO_DEPLOY == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image_digest: ${{ needs.image.outputs.digest }}

@@ -1,0 +1,56 @@
+# Safety net for cost: once a day, destroy anything left in the dev state
+# (for example, a demo whose destroy job failed). Skipped when you've chosen to
+# keep environments running (repository variable AUTO_DEPLOY == 'true').
+name: demo-cleanup
+
+on:
+  schedule:
+    - cron: "30 4 * * *" # daily 04:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-state-dev
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: vars.TF_STATE_BUCKET != '' && vars.AUTO_DEPLOY != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: infra-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_repository_tag: ${{ github.repository }}
+      TF_VAR_container_image: placeholder.invalid/icp/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/dev
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+
+      - name: Destroy leftovers (if any)
+        working-directory: terraform/environments/dev
+        run: |
+          n="$(terraform state list | wc -l)"
+          if [ "$n" -eq 0 ]; then
+            echo "dev is empty; nothing is billing." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::warning::Found $n leftover dev resources; destroying."
+          terraform destroy -no-color -auto-approve -lock-timeout=10m
+          echo "Destroyed $n leftover dev resources." >>"$GITHUB_STEP_SUMMARY"

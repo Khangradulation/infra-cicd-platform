@@ -1,0 +1,15 @@
+# OPTIONAL — only after the first `terraform apply` of this root succeeded.
+# Rename to backend.tf, then run:
+#   terraform init -migrate-state -backend-config=../environments/dev/backend.hcl
+# (any env's backend.hcl works: bucket/region/kms_key_id are identical; the key below differs)
+#
+# Keep a copy of the local terraform.tfstate somewhere safe until you have
+# verified `terraform plan` shows no changes against the migrated state.
+
+terraform {
+  backend "s3" {
+    key          = "bootstrap/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
+  }
+}

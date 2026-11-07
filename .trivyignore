@@ -1,0 +1,8 @@
+# Approved Trivy exceptions. Every entry needs: ID, reason, owner, expiry (exp:YYYY-MM-DD).
+# Trivy ignores an entry after its exp: date, so the build fails again until it is re-reviewed.
+# Catalogue: docs/security.md#approved-exceptions
+#
+# Format:
+# CVE-0000-00000 exp:2027-01-31  # <package>: <why it is not exploitable here> - owner: <name>
+#
+# (no exceptions currently approved)

@@ -1,0 +1,67 @@
+# Manual rollback of one environment to an earlier task-definition revision.
+# Runs in the target's GitHub Environment, so a production rollback needs the
+# same reviewer approval as a production deploy.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to roll back
+        type: choice
+        options: [dev, staging, production]
+        required: true
+      task_definition:
+        description: "Target revision (e.g. icp-prod:41). Empty = newest revision older than the running one."
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Only main may roll back production
+        if: inputs.environment == 'production' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run production rollbacks from main."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-rollback-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Roll back
+        id: rb
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          TARGET: ${{ inputs.task_definition }}
+          ENV_INPUT: ${{ inputs.environment }}
+        run: |
+          case "$ENV_INPUT" in production) env=prod ;; *) env="$ENV_INPUT" ;; esac
+          if [ -n "$TARGET" ] && ! [[ "$TARGET" =~ ^icp-${env}:[0-9]+$ ]]; then
+            echo "::error::task_definition must look like icp-${env}:<revision>"; exit 1
+          fi
+          scripts/rollback-ecs.sh "$env" "$TARGET"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Rollback ${{ inputs.environment }}: ${{ job.status }}"
+            echo "- Now running: \`${{ steps.rb.outputs.task_definition_arn }}\`"
+            echo "- Image: \`${{ steps.rb.outputs.image }}\`"
+          } >>"$GITHUB_STEP_SUMMARY"

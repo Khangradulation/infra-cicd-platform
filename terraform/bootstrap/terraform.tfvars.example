@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+region = "us-east-1"
+
+# name_prefix       = "icp"
+# state_bucket_name = "my-org-icp-tfstate"   # default: icp-tfstate-<account>-<region>
+
+# Optional hardening: only these principals may delete/reconfigure the bucket.
+# state_admin_principal_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/aws-reserved/sso.amazonaws.com/*AdministratorAccess*"]
+
+# Cost alert for this project only (first 2 AWS budgets are free).
+# budget_alert_emails = ["you@example.com"]
+# monthly_budget_usd  = 5
+# activate_cost_allocation_tag = true   # second apply, ~24h later

@@ -1,0 +1,44 @@
+# Manual OIDC verification: shows the exact `sub` GitHub issues for this repo
+# (compare with `terraform output trusted_subjects` in environments/shared),
+# then proves the read-only plan role can be assumed. Prints claims only,
+# never the token itself.
+name: oidc-check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Show OIDC claims (not the token)
+        run: |
+          token="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)"
+          echo "::add-mask::${token}"
+          payload="$(cut -d. -f2 <<<"${token}" | tr '_-' '/+')"
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          claims="$(base64 -d <<<"${payload}" | jq '{sub, aud, ref, repository, repository_id, repository_owner_id, environment, job_workflow_ref}')"
+          echo "${claims}"
+          { echo '### OIDC claims'; echo '```json'; echo "${claims}"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Assume the plan role
+        if: vars.AWS_PLAN_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-session-name: gha-oidc-check-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Prove short-lived credentials work
+        if: vars.AWS_PLAN_ROLE_ARN != ''
+        run: |
+          arn="$(aws sts get-caller-identity --query Arn --output text)"
+          echo "Assumed: ${arn##*:assumed-role/}"
+          echo "OIDC -> AWS OK: \`${arn##*:assumed-role/}\`" >>"$GITHUB_STEP_SUMMARY"
