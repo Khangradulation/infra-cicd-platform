@@ -12,7 +12,9 @@
 # Env: AWS_REGION (default us-east-2), AWS_PROFILE (optional).
 set -euo pipefail
 
-cmd="${1:?usage: $0 {bootstrap|shared|image|up|down|status}}"
+usage="usage: $0 bootstrap|shared|image|up|down|status"
+cmd="${1:-}"
+[[ -n "${cmd}" ]] || { echo "${usage}" >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export AWS_REGION="${AWS_REGION:-us-east-2}"
 export AWS_DEFAULT_REGION="${AWS_REGION}" AWS_PAGER=""

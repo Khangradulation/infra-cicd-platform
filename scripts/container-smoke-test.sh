@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the image the way ECS does (read-only root FS, /tmp tmpfs, all caps
+# Run the image the way ECS does (read-only root FS, /tmp as a volume seeded
+# from the image like Fargate's ephemeral mount, all caps
 # dropped, no-new-privileges, non-root) and probe every endpoint.
 #
 # Usage: scripts/container-smoke-test.sh <image> [expected_git_sha]
@@ -21,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker run -d --name "${name}" -p "127.0.0.1:${port}:8080" \
-  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --read-only --mount type=volume,target=/tmp \
   --cap-drop ALL --security-opt no-new-privileges \
   -e APP_ENV=smoke -e LOG_LEVEL=INFO "${image}" >/dev/null
 

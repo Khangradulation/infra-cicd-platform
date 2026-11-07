@@ -53,6 +53,14 @@ RUN groupadd --system --gid 10001 app \
  && rm -rf /root/.cache /usr/local/lib/python3*/ensurepip
 
 COPY --from=build /opt/venv /opt/venv
+
+# ECS mounts an ephemeral volume at /tmp (the root FS is read-only). Fargate
+# copies the image directory's ownership/mode onto that volume only when the
+# path is declared as a VOLUME; without this it is root:root 0755 and the
+# non-root app cannot write (gunicorn worker heartbeat files live there).
+RUN chmod 1777 /tmp
+VOLUME ["/tmp"]
+
 WORKDIR /app
 COPY --chown=root:root gunicorn.conf.py ./
 COPY --chown=root:root src/ ./src/
