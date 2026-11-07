@@ -12,6 +12,7 @@ module "ecr" {
 
 module "github_oidc" {
   source = "../../modules/github-oidc"
+  count  = var.enable_github_oidc ? 1 : 0
 
   github_owner               = var.github_owner
   github_repository          = var.github_repository

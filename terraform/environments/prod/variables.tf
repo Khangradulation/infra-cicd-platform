@@ -32,3 +32,15 @@ variable "repository_tag" {
   type        = string
   default     = "infra-cicd-platform"
 }
+
+variable "permissions_boundary_name" {
+  description = "Workload permissions boundary from environments/shared. Empty string = none (local-only mode without GitHub OIDC)."
+  type        = string
+  default     = "icp-workload-boundary"
+}
+
+variable "cpu_architecture" {
+  description = "X86_64 or ARM64. ARM64 (Graviton) is ~20% cheaper and matches images built on Apple Silicon."
+  type        = string
+  default     = "X86_64"
+}

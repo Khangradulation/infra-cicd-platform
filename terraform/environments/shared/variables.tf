@@ -6,11 +6,13 @@ variable "region" {
 variable "github_owner" {
   description = "GitHub user/organisation owning the repository (case-sensitive)."
   type        = string
+  default     = "unset"
 }
 
 variable "github_repository" {
   description = "GitHub repository name."
   type        = string
+  default     = "unset"
 }
 
 variable "state_bucket_name" {
@@ -52,3 +54,10 @@ variable "existing_oidc_provider_arn" {
   type        = string
   default     = null
 }
+
+variable "enable_github_oidc" {
+  description = "Create the GitHub OIDC provider + CI roles. Set false where an AWS Organizations SCP blocks OIDC providers (local-only mode, see scripts/demo-local.sh)."
+  type        = bool
+  default     = true
+}
+

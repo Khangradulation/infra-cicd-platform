@@ -2,6 +2,9 @@
 module "stack" {
   source = "../../modules/app-stack"
 
+  permissions_boundary_name = var.permissions_boundary_name == "" ? null : var.permissions_boundary_name
+  cpu_architecture          = var.cpu_architecture
+
   environment = "dev"
 
   vpc_cidr         = "10.10.0.0/16"
