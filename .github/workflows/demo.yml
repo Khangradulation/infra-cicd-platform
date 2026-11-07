@@ -1,0 +1,228 @@
+# ONE-CLICK DEMO: build + scan the app, create the dev environment, prove it
+# works through the public load balancer, keep it up for N minutes, then
+# DESTROY it. Nothing keeps running (or billing) afterwards.
+#
+# Cost: roughly USD 0.10-0.15 per hour that dev exists (ALB + NAT + 1 small task).
+# Safety nets: the destroy job runs even if earlier jobs fail or the run is
+# cancelled, and demo-cleanup.yml destroys any leftover dev stack daily.
+name: demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: How long to keep dev running before automatic teardown
+        type: choice
+        options: ["15", "30", "60", "120"]
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-state-dev
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VAR_region: ${{ vars.AWS_REGION }}
+  TF_VAR_repository_tag: ${{ github.repository }}
+
+jobs:
+  build:
+    name: 1. build, scan, push image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Only main may run the demo
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run the demo from main (OIDC roles trust main only)."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools (sha256-verified)
+        run: scripts/install-ci-tools.sh trivy
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: application
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: icp-app:demo
+          build-args: |
+            APP_VERSION=demo-${{ github.run_number }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container smoke test
+        run: scripts/container-smoke-test.sh icp-app:demo "$GITHUB_SHA"
+
+      - name: Trivy gate (fixable HIGH/CRITICAL)
+        run: trivy image --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore --exit-code 1 icp-app:demo
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          role-session-name: gha-demo-push-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        with:
+          mask-password: true
+
+      - name: Push :<git-sha> (or reuse it if already pushed)
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          if ! aws ecr describe-images --repository-name "$REPO" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker tag icp-app:demo "${REGISTRY}/${REPO}:${GITHUB_SHA}"
+            docker push "${REGISTRY}/${REPO}:${GITHUB_SHA}"
+          fi
+          digest="$(aws ecr describe-images --repository-name "$REPO" --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::could not resolve digest"; exit 1; }
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+
+  up:
+    name: 2. create dev + health checks
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: infra-dev
+      url: ${{ steps.out.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      url: ${{ steps.out.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/dev
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+
+      - name: terraform apply (dev, image pinned by digest)
+        working-directory: terraform/environments/dev
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          REPO: ${{ vars.ECR_REPOSITORY }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          export TF_VAR_container_image="${account}.dkr.ecr.${REGION}.amazonaws.com/${REPO}@${DIGEST}"
+          terraform apply -no-color -auto-approve -lock-timeout=10m
+
+      - name: Read outputs
+        id: out
+        working-directory: terraform/environments/dev
+        run: echo "url=$(terraform output -raw app_url)" >>"$GITHUB_OUTPUT"
+
+      - name: Health checks through the public load balancer
+        env:
+          SMOKE_TIMEOUT_SECONDS: "420" # new ALB DNS + first task start
+        run: scripts/smoke-test-url.sh "${{ steps.out.outputs.url }}" "$GITHUB_SHA" dev
+
+      - name: Summary
+        if: always()
+        env:
+          KEEP: ${{ inputs.keep_minutes }}
+        run: |
+          {
+            echo "## Demo: dev is ${{ job.status == 'success' && 'UP' || 'NOT healthy' }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| App | ${{ steps.out.outputs.url }} |"
+            echo "| Try | \`/\` · \`/health\` · \`/version\` · \`/status\` |"
+            echo "| Image | \`${{ needs.build.outputs.digest }}\` (commit \`${GITHUB_SHA::7}\`) |"
+            echo "| Auto-destroy at | $(date -u -d "+${KEEP} minutes" '+%H:%M UTC') (in ${KEEP} min) |"
+            echo ""
+            echo "Cancel this run to tear down early. The destroy job still runs."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  hold:
+    name: 3. keep running (${{ inputs.keep_minutes }} min)
+    needs: up
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    steps:
+      - name: Wait
+        env:
+          KEEP: ${{ inputs.keep_minutes }}
+          URL: ${{ needs.up.outputs.url }}
+        run: |
+          echo "dev is live at ${URL}. Tearing down in ${KEEP} minutes."
+          sleep $(( KEEP * 60 ))
+
+  down:
+    name: 4. destroy dev
+    needs: [build, up, hold]
+    if: always() # runs on success, failure AND cancellation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: infra-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Required by the root's variables but irrelevant for destroy.
+      TF_VAR_container_image: placeholder.invalid/icp/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          root: terraform/environments/dev
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+
+      - name: terraform destroy (retries once for slow ENI/NAT release)
+        working-directory: terraform/environments/dev
+        run: |
+          for attempt in 1 2; do
+            if terraform destroy -no-color -auto-approve -lock-timeout=10m; then break; fi
+            [ "$attempt" = 2 ] && exit 1
+            echo "::warning::destroy attempt $attempt failed; retrying in 60s"; sleep 60
+          done
+
+      - name: Verify nothing is left
+        working-directory: terraform/environments/dev
+        run: |
+          left="$(terraform state list | wc -l)"
+          if [ "$left" -ne 0 ]; then
+            echo "::error::$left resources still in dev state:"; terraform state list; exit 1
+          fi
+          echo "## Demo: dev destroyed, 0 resources left in state" >>"$GITHUB_STEP_SUMMARY"

@@ -151,7 +151,7 @@ jobs:
 
       # ------------------------------------------------ main only: publish
       - name: Assume ECR push role (OIDC)
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
@@ -161,14 +161,14 @@ jobs:
 
       - name: Log in to ECR
         id: ecr
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
         with:
           mask-password: true
 
       - name: Push the scanned image as :<git-sha> and resolve its digest
         id: push
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ECR_PUSH_ROLE_ARN != ''
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           REPO: ${{ vars.ECR_REPOSITORY }}
@@ -196,7 +196,8 @@ jobs:
   deploy:
     name: promote
     needs: image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.image.outputs.digest != ''
+    # Cost-safe default: promotion only runs when environments are kept up (AUTO_DEPLOY=true).
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.image.outputs.digest != '' && vars.AUTO_DEPLOY == 'true'
     permissions:
       contents: read
       id-token: write

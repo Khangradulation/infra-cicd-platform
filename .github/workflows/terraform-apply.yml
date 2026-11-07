@@ -23,13 +23,22 @@ permissions:
 jobs:
   guard:
     runs-on: ubuntu-24.04
+    outputs:
+      proceed: ${{ steps.costsafe.outputs.skip != 'true' }}
     steps:
       - name: Only main may apply
         if: github.ref != 'refs/heads/main'
         run: |
           echo "::error::terraform-apply only runs from main (got ${GITHUB_REF})."
           exit 1
+      - name: Cost-safe mode
+        if: github.event_name == 'push' && vars.TF_AUTO_APPLY != 'true'
+        run: |
+          echo "::notice::Automatic applies are off (repository variable TF_AUTO_APPLY != 'true'). Use the 'demo' workflow, or run this workflow manually."
+          echo "skip=true" >>"$GITHUB_OUTPUT"
+        id: costsafe
       - name: Check configuration
+        if: steps.costsafe.outputs.skip != 'true'
         env:
           PLAN_ROLE: ${{ vars.AWS_PLAN_ROLE_ARN }}
           BUCKET: ${{ vars.TF_STATE_BUCKET }}
@@ -46,6 +55,7 @@ jobs:
 
   dev:
     needs: guard
+    if: needs.guard.outputs.proceed == 'true'
     concurrency:
       group: terraform-state-dev
       cancel-in-progress: false

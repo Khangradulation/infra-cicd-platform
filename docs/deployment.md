@@ -9,7 +9,13 @@
 | `app-ci` | PR / push touching `application/**` | `icp-gha-ecr-push` on `main` only | Pushes images only |
 | `deploy` | called by `app-ci` on `main`, or manual with a digest | `icp-gha-deploy-<env>` inside `dev` / `staging` / `production` | Updates ECS only |
 | `rollback` | manual | `icp-gha-deploy-<env>` | Updates ECS only |
+| `demo` | manual | ECR push, then `icp-gha-terraform-apply-dev` in `infra-dev` | Creates dev, holds it, **destroys it** |
+| `demo-cleanup` | daily, manual | `icp-gha-terraform-apply-dev` | Destroys leftover dev only |
 | `lint`, `security-scan`, `oidc-check` | PR/push, weekly, manual | plan role (`oidc-check`) | No |
+
+> **Cost-safe defaults.** `terraform-apply` on push and `app-ci → deploy` only run when the
+> repository variables `TF_AUTO_APPLY` / `AUTO_DEPLOY` are `true`. Without them, use the
+> **demo** workflow, or run `terraform-apply` / `deploy` manually.
 
 ## Infrastructure changes
 

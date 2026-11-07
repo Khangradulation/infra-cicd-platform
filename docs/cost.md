@@ -23,6 +23,24 @@ Data transfer and log volume depend on traffic and aren't fully included.
 That's about **$290/month** with everything running all the time. Most of it is fixed hourly
 cost: NAT gateways are about 40% and ALBs about 30%.
 
+## Default: pay only while a demo runs
+
+With `TF_AUTO_APPLY` and `AUTO_DEPLOY` unset (the default), no environment exists between
+runs of the **demo** workflow:
+
+| What | While a demo runs | Between demos |
+|---|---|---|
+| dev (ALB, NAT, 1 task, KMS key, alarms) | ~$0.10–0.15/hour | $0 (destroyed; its KMS key waits 7 days pending deletion, free) |
+| State bucket + state KMS key | | ~$1/month |
+| ECR images | | a few cents/month (lifecycle keeps the newest 100) |
+| GitHub Actions | free (public repository) | free |
+
+A budget alert (`budget_alert_emails` in `terraform/bootstrap`) emails you if this project's
+spend passes 50% / 100% of $5, or is forecast to exceed it. It only counts resources tagged
+`Project=infra-cicd-platform`, so other workloads in the account don't trigger it. Activate
+the `Project` cost-allocation tag (`activate_cost_allocation_tag = true`) about a day after
+the first apply so the filter starts counting.
+
 ## Cost levers
 
 | Lever | Saving | Trade-off |

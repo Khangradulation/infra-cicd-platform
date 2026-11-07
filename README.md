@@ -40,6 +40,29 @@ monitoring, and an **immutable-digest promotion** pipeline: dev → staging → 
 The code is built and statically verified. **Nothing has been provisioned in AWS yet.**
 See the [implementation report](docs/implementation-report.md) and [setup.md](docs/setup.md).
 
+## Run it without leaving it running (one-click demo)
+
+The platform is **cost-safe by default**. Merging to `main` doesn't create or keep any
+environment running.
+
+**Actions → demo → Run workflow**, then pick 15/30/60/120 minutes. The workflow:
+
+1. Builds and scans the image, then pushes it to ECR.
+2. Creates `dev` and checks it is healthy through the public load balancer. The run page shows the URL.
+3. Keeps it up for the chosen time.
+4. **Destroys it**, and confirms that 0 resources are left.
+
+The destroy step also runs if anything fails or you cancel the run. As a safety net,
+`demo-cleanup` destroys any leftover dev stack every day.
+
+A 30-minute demo costs about **$0.05–0.10**. Between demos, only the state bucket, its KMS
+key and stored images remain (about $1–2/month). [docs/cost.md](docs/cost.md) shows how to remove those too.
+
+| Repository variable | Default | Effect when `true` |
+|---|---|---|
+| `TF_AUTO_APPLY` | unset | Pushes to `main` apply Terraform to dev → staging → prod |
+| `AUTO_DEPLOY` | unset | Pushes to `main` promote new images dev → staging → prod. Also disables the daily dev cleanup. |
+
 ## Quick start (local, no AWS needed)
 
 ```bash

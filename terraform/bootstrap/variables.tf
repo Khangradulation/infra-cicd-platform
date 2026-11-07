@@ -51,3 +51,32 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "budget_alert_emails" {
+  description = "Emails for the project cost budget alerts. Empty = no budget created."
+  type        = list(string)
+  default     = []
+  sensitive   = true
+
+  validation {
+    condition     = alltrue([for e in var.budget_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
+    error_message = "budget_alert_emails must be valid email addresses."
+  }
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly budget for resources tagged Project=infra-cicd-platform."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.monthly_budget_usd > 0
+    error_message = "monthly_budget_usd must be positive."
+  }
+}
+
+variable "activate_cost_allocation_tag" {
+  description = "Activate 'Project' as a cost-allocation tag (only possible ~24h after AWS first sees the tag)."
+  type        = bool
+  default     = false
+}
