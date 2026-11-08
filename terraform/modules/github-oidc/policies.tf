@@ -238,14 +238,15 @@ data "aws_iam_policy_document" "apply" {
 
   # ---- Read shared resources looked up via data sources
   statement {
-    sid       = "ReadSharedEcr"
-    actions   = ["ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListImages"]
+    sid = "ReadSharedEcr"
+    # the provider reads tags for aws_ecr_repository / aws_iam_policy data sources
+    actions   = ["ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListImages", "ecr:ListTagsForResource"]
     resources = [var.ecr_repository_arn]
   }
 
   statement {
     sid       = "ReadBoundary"
-    actions   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicies"]
+    actions   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicies", "iam:ListPolicyTags"]
     resources = ["*"]
   }
 
