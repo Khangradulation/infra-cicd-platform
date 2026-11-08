@@ -45,9 +45,14 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     GIT_SHA="${GIT_SHA}" \
     BUILD_TIME="${BUILD_TIME}"
 
+# Apply Debian security fixes released since the base digest was built (the
+# official image lags debian-security by days; Trivy fails on fixed HIGH/CRITICAL).
 # Unprivileged user with a fixed UID (matches nothing on the host); remove the
 # system pip/setuptools so the runtime image can't install anything.
-RUN groupadd --system --gid 10001 app \
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app \
  && { python -m pip uninstall -y pip setuptools wheel 2>/dev/null || true; } \
  && rm -rf /root/.cache /usr/local/lib/python3*/ensurepip
