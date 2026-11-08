@@ -75,6 +75,12 @@ variable "monthly_budget_usd" {
   }
 }
 
+variable "budget_scope_to_project_tag" {
+  description = "Count only costs tagged Project=infra-cicd-platform. Set false in a dedicated account, or where the tag can't be activated (linked accounts)."
+  type        = bool
+  default     = true
+}
+
 variable "activate_cost_allocation_tag" {
   description = "Activate 'Project' as a cost-allocation tag (only possible ~24h after AWS first sees the tag)."
   type        = bool

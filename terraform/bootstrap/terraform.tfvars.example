@@ -10,4 +10,5 @@ region = "us-east-1"
 # Cost alert for this project only (first 2 AWS budgets are free).
 # budget_alert_emails = ["you@example.com"]
 # monthly_budget_usd  = 5
+# budget_scope_to_project_tag = false  # dedicated or linked account: budget all spend
 # activate_cost_allocation_tag = true   # second apply, ~24h later

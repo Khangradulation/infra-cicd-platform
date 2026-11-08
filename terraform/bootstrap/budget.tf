@@ -24,14 +24,21 @@ resource "aws_budgets_budget" "project" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
-  cost_filter {
-    name   = "TagKeyValue"
-    values = ["user:Project$infra-cicd-platform"]
+  # Tag-scoped only when the Project tag can be active. A linked account in an
+  # AWS Organization can't activate cost-allocation tags itself; in a dedicated
+  # project account set budget_scope_to_project_tag = false to budget all spend.
+  dynamic "cost_filter" {
+    for_each = var.budget_scope_to_project_tag ? [1] : []
+    content {
+      name   = "TagKeyValue"
+      values = ["user:Project$infra-cicd-platform"]
+    }
   }
 
   dynamic "notification" {
     for_each = [
       { type = "ACTUAL", threshold = 50 },
+      { type = "ACTUAL", threshold = 80 },
       { type = "ACTUAL", threshold = 100 },
       { type = "FORECASTED", threshold = 100 },
     ]
