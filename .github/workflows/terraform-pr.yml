@@ -96,7 +96,8 @@ jobs:
       id-token: write
     env:
       TF_VAR_region: ${{ vars.AWS_REGION }}
-      TF_VAR_container_image: ${{ vars.BOOTSTRAP_IMAGE_URI }}
+      # Plans never pull the image, so PRs work before BOOTSTRAP_IMAGE_URI is set (setup.md step 6).
+      TF_VAR_container_image: ${{ vars.BOOTSTRAP_IMAGE_URI || 'placeholder.invalid/icp/app@sha256:0000000000000000000000000000000000000000000000000000000000000000' }}
       TF_VAR_repository_tag: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

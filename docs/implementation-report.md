@@ -103,8 +103,8 @@ Issues found by the live run and fixed:
 ## Remaining manual steps
 
 1. **Confirm the AWS Budgets subscription** if AWS emails a confirmation to the alert address.
-2. **Protect `main`** (Settings → Branches): require a PR plus the `terraform-pr`, `app-ci`,
-   and `lint` checks, and block force-pushes. It's unprotected today.
+2. `main` is protected: PR required, `lint` and `gate` required, no force-push or deletion,
+   admins included. `gate` enforces `terraform-pr` and `app-ci` on the PRs they apply to.
 3. To run long-lived environments: set `BOOTSTRAP_IMAGE_URI`, then run `terraform-apply`
    (setup.md steps 6–7). This is billable.
 4. Optional: get an ACM certificate (HTTPS) and set alarm email addresses.

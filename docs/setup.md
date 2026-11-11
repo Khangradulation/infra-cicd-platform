@@ -96,7 +96,7 @@ The script:
 
 Then, in repository settings:
 
-* Protect `main`: require a PR, require the `terraform-pr`, `app-ci`, and `lint` checks, and block force-pushes.
+* Protect `main`: require a PR, require the `lint` and `gate` checks, and block force-pushes. `gate` (`pr-gate.yml`) stands in for `terraform-pr` and `app-ci`: those use path filters, so requiring them directly would block every PR they skip.
 * Optionally require signed commits.
 
 Verify OIDC: **Actions → oidc-check → Run workflow**. The printed `sub` must appear in
