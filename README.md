@@ -16,7 +16,7 @@ monitoring, and an **immutable-digest promotion** pipeline: dev → staging → 
 │   └── environments/
 │       ├── shared/           ECR, OIDC provider, CI roles, permissions boundary
 │       ├── dev/  staging/  prod/
-├── .github/workflows/        terraform-pr · terraform-apply · app-ci · deploy · rollback · lint · security-scan · oidc-check
+├── .github/workflows/        terraform-pr · terraform-apply · app-ci · deploy · rollback · lint · pr-gate · security-scan · oidc-check
 ├── scripts/                  bootstrap, deploy, smoke-test and tool-install helpers
 └── docs/                     architecture · setup · deployment · security · troubleshooting · cost
 ```

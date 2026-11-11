@@ -50,7 +50,7 @@
 
 ## GitHub settings checklist
 
-- [ ] Branch protection on `main`: PR required, status checks `terraform-pr`, `app-ci`, `lint` required, no force-push, no deletion
+- [ ] Branch protection on `main`: PR required, status checks `lint` and `gate` required (`gate` enforces `terraform-pr` and `app-ci` when they apply), no force-push, no deletion
 - [ ] Environments `production` and `infra-production`: required reviewers, deployment branches `main` (and `v*` tags for production)
 - [ ] Actions → General: "Read repository contents" default token permission; don't allow Actions to approve PRs
 - [ ] Optional: custom OIDC subject template with `ref` (`scripts/github-setup.sh --oidc-sub-with-ref`) and `oidc_subject_includes_ref = true`
