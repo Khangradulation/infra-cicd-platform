@@ -67,3 +67,4 @@ uv pip compile --generate-hashes --python-version 3.14 requirements-dev.in -o re
 
 The Docker build installs with `--require-hashes --no-deps`, so an unlocked or tampered
 package fails the build.
+<!-- temporary: pr-gate test -->

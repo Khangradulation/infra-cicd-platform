@@ -59,3 +59,4 @@ No modules.
 | <a name="output_repository_name"></a> [repository\_name](#output\_repository\_name) | Repository name. |
 | <a name="output_repository_url"></a> [repository\_url](#output\_repository\_url) | Registry URL without tag, e.g. <account>.dkr.ecr.<region>.amazonaws.com/icp/app. |
 <!-- END_TF_DOCS -->
+<!-- temporary: pr-gate test -->
