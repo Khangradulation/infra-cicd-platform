@@ -16,7 +16,7 @@ monitoring, and an **immutable-digest promotion** pipeline: dev → staging → 
 │   └── environments/
 │       ├── shared/           ECR, OIDC provider, CI roles, permissions boundary
 │       ├── dev/  staging/  prod/
-├── .github/workflows/        terraform-pr · terraform-apply · app-ci · deploy · rollback · lint · pr-gate · security-scan · oidc-check
+├── .github/workflows/        demo · demo-cleanup · terraform-pr · terraform-apply · app-ci · deploy · rollback · lint · pr-gate · security-scan · oidc-check
 ├── scripts/                  bootstrap, deploy, smoke-test and tool-install helpers
 └── docs/                     architecture · setup · deployment · security · troubleshooting · cost
 ```
@@ -37,8 +37,8 @@ monitoring, and an **immutable-digest promotion** pipeline: dev → staging → 
 
 ## Status
 
-The code is built and statically verified. **Nothing has been provisioned in AWS yet.**
-See the [implementation report](docs/implementation-report.md) and [setup.md](docs/setup.md).
+Verified on real AWS (us-east-2). [Demo run #5](https://github.com/Khangradulation/infra-cicd-platform/actions/runs/42516375406) (Nov 8, 2026) built and scanned the image, created `dev` on ECS Fargate behind a public load balancer, passed health checks, stayed up 15 minutes, then destroyed itself with 0 resources left in state.
+The `deploy` promotion pipeline (dev → staging → prod) hasn't been run against AWS yet. See the [implementation report](docs/implementation-report.md) and [setup.md](docs/setup.md).
 
 ## Run it without leaving it running (one-click demo)
 
